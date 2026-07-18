@@ -1,9 +1,15 @@
+// ============================================================
+//  SERVICE WORKER - Intercepts all requests
+// ============================================================
+
+const PROXY_PATH = "/lNv1pC9AWPUY4gbidyBO";
+
 self.addEventListener("fetch", (event) => {
     event.respondWith(handleRequest(event.request));
 });
 
 async function handleRequest(request) {
-    const proxyRequestURL = `${self.location.origin}/lNv1pC9AWPUY4gbidyBO`;
+    const proxyRequestURL = `${self.location.origin}${PROXY_PATH}`;
 
     try {
         const proxyRequest = {
@@ -27,5 +33,6 @@ async function handleRequest(request) {
     }
     catch (error) {
         console.error(`Fetching ${proxyRequestURL} failed: ${error}`);
+        return fetch(request);
     }
 }

